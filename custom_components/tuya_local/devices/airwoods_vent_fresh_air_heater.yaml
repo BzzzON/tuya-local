@@ -1,6 +1,8 @@
 name: Fresh air heater
 products:
   - id: rhpqgxqyxpwpk4j3
+    manufacturer: Airwoods
+    model: Vent
 entities:
   - entity: fan
     translation_key: ventilation
