@@ -2,6 +2,7 @@
 Setup for different kinds of Tuya light devices
 """
 
+import asyncio
 import logging
 from struct import error as StructError
 from struct import pack, unpack
@@ -316,6 +317,39 @@ class TuyaLocalLight(TuyaLocalEntity, LightEntity):
                     best_match = entry
             return best_match
 
+    def _turn_on_warmup_brightness(self, target):
+        """Return an intermediate brightness to ramp through when turning on.
+
+        Some devices ignore an abrupt transition from off straight to the
+        maximum level when brightness uses a discrete mapping (for example the
+        Beok/Avatto thermostat backlight dp with values 0/1/2/3) and there is no
+        separate switch dp. The firmware then silently drops the maximum value,
+        so turning the light on appears to succeed while it stays off. Returning
+        the lowest non-zero level lets the caller first bring the light on and
+        then apply the requested level. Returns None when no ramp is needed
+        (HSV-driven brightness, a dedicated switch dp, or fewer than two
+        non-zero levels).
+        """
+        if self._brightness_control_by_hsv() or self._switch_dps is not None:
+            return None
+        if not self._brightness_dps:
+            return None
+        levels = []
+        for value in self._brightness_dps.values(self._device):
+            try:
+                fvalue = float(value)
+            except (TypeError, ValueError):
+                continue
+            if fvalue > 0:
+                levels.append(fvalue)
+        if len(levels) < 2:
+            return None
+        levels.sort()
+        lower = [level for level in levels if level < target]
+        if not lower:
+            return None
+        return lower[0]
+
     async def async_turn_on(self, **params):
         settings = {}
         color_mode = None
@@ -557,6 +591,19 @@ class TuyaLocalLight(TuyaLocalEntity, LightEntity):
             r = self._effective_brightness_range
             if r:
                 bright = color_util.brightness_to_value(r, bright)
+            warmup = self._turn_on_warmup_brightness(bright)
+            if warmup is not None:
+                _LOGGER.info(
+                    "%s ramping light on via brightness %d",
+                    self._config.config_id,
+                    warmup,
+                )
+                await self._device.async_set_properties(
+                    self._brightness_dps.get_values_to_set(
+                        self._device, warmup, settings
+                    )
+                )
+                await asyncio.sleep(0.5)
             _LOGGER.info(
                 "%s turning light on to brightness %d",
                 self._config.config_id,
